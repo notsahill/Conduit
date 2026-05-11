@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <changeSet id="3" author="sahil">
+        <createTable tableName="workflow_definitions">
+            <column name="id" type="VARCHAR(26)">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="name" type="VARCHAR(255)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="type" type="VARCHAR(255)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="steps" type="TEXT[]">
+                <constraints nullable="false"/>
+            </column>
+            <column name="creation_time" type="TIMESTAMP WITH TIME ZONE"/>
+            <column name="last_updated_time" type="TIMESTAMP WITH TIME ZONE"/>
+        </createTable>
+
+        <addUniqueConstraint tableName="workflow_definitions"
+                             columnNames="name, type"
+                             constraintName="uq_workflow_definitions_name_type"/>
+    </changeSet>
+
+</databaseChangeLog>
