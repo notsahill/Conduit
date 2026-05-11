@@ -1,0 +1,13 @@
+package com.example.conduit.enums;
+
+public enum EventType {
+    WORKFLOW_STARTED,
+    STEP_STARTED,
+    STEP_COMPLETED,
+    STEP_FAILED,
+    STEP_RETRYING,
+    STEP_COMPENSATING,
+    STEP_COMPENSATED,
+    WORKFLOW_COMPLETED,
+    WORKFLOW_FAILED
+}
