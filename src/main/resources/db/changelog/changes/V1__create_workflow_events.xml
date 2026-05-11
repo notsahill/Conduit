@@ -20,7 +20,7 @@
                 <constraints nullable="false"/>
             </column>
             <column name="step_name" type="VARCHAR(100)"/>
-            <column name="payload" type="TEXT"/>
+            <column name="payload" type="JSONB"/>
             <column name="created_at" type="TIMESTAMP WITH TIME ZONE">
                 <constraints nullable="false"/>
             </column>
