@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <changeSet id="2" author="sahil">
+        <createTable tableName="executions">
+            <column name="id" type="VARCHAR(26)">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="workflow_definition_id" type="VARCHAR(26)">
+                <constraints nullable="false"
+                             foreignKeyName="fk_executions_workflow_definition_id"
+                             references="workflow_definitions(id)"/>
+            </column>
+            <column name="name" type="VARCHAR(255)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="status" type="VARCHAR(50)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="current_state" type="VARCHAR(255)"/>
+            <column name="input" type="JSONB">
+                <constraints nullable="false"/>
+            </column>
+            <column name="output" type="JSONB"/>
+            <column name="error" type="JSONB"/>
+            <column name="parent_execution_id" type="VARCHAR(26)"/>
+            <column name="parent_branch_index" type="INTEGER"/>
+            <column name="root_execution_id" type="VARCHAR(26)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="started_at" type="TIMESTAMP WITH TIME ZONE"/>
+            <column name="stopped_at" type="TIMESTAMP WITH TIME ZONE"/>
+            <column name="creation_time" type="TIMESTAMP WITH TIME ZONE"/>
+            <column name="last_updated_time" type="TIMESTAMP WITH TIME ZONE"/>
+        </createTable>
+
+        <addForeignKeyConstraint baseTableName="executions" baseColumnNames="parent_execution_id"
+                                 referencedTableName="executions" referencedColumnNames="id"
+                                 constraintName="fk_executions_parent_execution_id"/>
+
+        <addForeignKeyConstraint baseTableName="executions" baseColumnNames="root_execution_id"
+                                 referencedTableName="executions" referencedColumnNames="id"
+                                 constraintName="fk_executions_root_execution_id"/>
+
+        <addUniqueConstraint tableName="executions"
+                             columnNames="workflow_definition_id, name"
+                             constraintName="uq_executions_workflow_definition_id_name"/>
+
+        <createIndex tableName="executions" indexName="idx_executions_status">
+            <column name="status"/>
+        </createIndex>
+    </changeSet>
+
+</databaseChangeLog>

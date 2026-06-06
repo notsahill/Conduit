@@ -5,9 +5,9 @@
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
 
-    <include file="db/changelog/changes/V1__create_workflow_events.xml"/>
-    <include file="db/changelog/changes/V2__create_workflows.xml"/>
-    <include file="db/changelog/changes/V3__create_workflow_definitions.xml"/>
-    <include file="db/changelog/changes/V4__create_task_messages.xml"/>
+    <include file="db/changelog/changes/V1__create_workflow_definitions.xml"/>
+    <include file="db/changelog/changes/V2__create_executions.xml"/>
+    <include file="db/changelog/changes/V3__create_execution_events.xml"/>
+    <include file="db/changelog/changes/V4__create_tasks.xml"/>
 
 </databaseChangeLog>
