@@ -1,126 +1,352 @@
 # Conduit
-*A distributed workflow orchestration engine*
- 
-> Working title — feel free to swap. Other candidates: Forge, Loom, Pulse, Relay.
- 
+
+*A self-hosted, backend workflow orchestration engine.*
+
+Conduit executes multi-step, asynchronous workflows defined as state machines. Workflows are **state machines** (JSON definitions), runs are **executions**, and an **event-sourced engine** drives state transitions durably across a fleet of horizontally-scaled workers.
+
+This is a learning/portfolio project. The goal is a clean, correct implementation of the core distributed-systems patterns — event sourcing, effectively-once execution, retries with backoff, fan-out/fan-in, crash recovery — over Postgres + Redis.
+
 ---
- 
-## Overview
- 
-Conduit is a self-hosted workflow orchestration engine that reliably executes multi-step, asynchronous workflows across distributed worker services. It handles the hard parts of distributed execution — retries, failure recovery, idempotency, state persistence — so application developers can focus on writing business logic instead of plumbing.
- 
-Think of it as a lightweight, self-hosted analogue to AWS Step Functions or Temporal. Not as feature-rich, but built from first principles to demonstrate the core engineering patterns that make modern workflow systems work.
- 
+
+## Design decisions
+
+| Area | Decision |
+|---|---|
+| Definition language | Simplified custom JSON DSL, Step Functions–shaped (no full JSONPath; dot paths only where unavoidable) |
+| State types | Task, Choice, Pass, Wait, Succeed, Fail, Parallel, Map |
+| Engine model | Event-sourced + replay (current state derived from an immutable event log) |
+| Worker model | Redis Streams message queue (one stream per resource, consumer groups) |
+| Scheduler | DB scan of a `next_run_at` column via an in-process poll loop (no Quartz/cron, no broker-native delay) |
+| Engine scaling | Single engine instance; workers scale horizontally |
+| Parallel / Map fan-out | Child executions (recursive, first-class rows) |
+| Control-plane API | Step Functions–style REST |
+| Data flow | Whole output → next input (no path filters in v1) |
+| Resource model | Convention-only: `Resource` (plain name) = Redis stream name; no registry. Unmanned resource → task times out. |
+| Capabilities | DSL-only: all knobs (`TimeoutSeconds`, `Retry`, reserved `Parameters`) live per-Task in the definition |
+| Task execution | A user-written worker handler does the work (including HTTP calls). Built-in resources (`http:invoke`) deferred to v2, unblocked by the dispatch abstraction. |
+
+**Guiding principles**
+- **Event-sourced truth.** Every transition is an immutable event; state is derived by replay. Recovery is deterministic, audit is free.
+- **Pure decision core.** The engine's `decide()` is side-effect-free and unit-testable with zero infra. All IO lives at the edges.
+- **Effectively-once.** Idempotency keys + status guards on both worker and engine sides — no duplicate side effects.
+- **Open for extension.** Resource dispatch is pluggable so a built-in HTTP/system-resource layer can be added later without rework.
+
 ---
- 
-## The problem
- 
-Real-world backend systems often involve operations that span multiple steps, services, and time horizons:
- 
-- Document ingestion (upload → OCR → validate → classify → persist → notify)
-- Payment processing (authorize → capture → ledger entry → reconcile → notify)
-- Onboarding flows (verify → enrich → provision → email → audit)
-- AI pipelines (extract → embed → analyze → summarize → persist)
-Implementing these as synchronous API chains creates fragile systems. A single failed step kills the workflow. Recovery requires manual intervention. Retry logic gets duplicated across services. There's no visibility into what's running, stuck, or failed. Scaling individual steps independently becomes impossible.
- 
-Conduit solves this by treating workflows as first-class entities with persistent state, durable execution, and observable progress.
- 
+
+## Architecture
+
+Three planes: a **control plane** (REST), a single-instance **engine plane** (replay → decide → append → dispatch), and a **data plane** (Redis Streams) carrying tasks to workers and results back.
+
+```
+                    ┌─────────────────────────────────────────────┐
+   REST client ───▶ │ Control Plane (Spring MVC controllers)        │
+                    │  CreateWorkflowDefinition / StartExecution... │
+                    └───────────────┬──────────────────────────────┘
+                                    │ append events (1 tx)
+                                    ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │ Postgres (source of truth)                                     │
+   │  workflow_definitions · executions · execution_events · tasks   │
+   └───────▲───────────────────────────┬──────────────────────────┘
+           │ replay                     │ claim due / runnable
+           │                            ▼
+   ┌───────┴────────────────┐   ┌──────────────────────────┐
+   │ Engine (single inst.)  │   │ Scheduler (poll loop)     │
+   │  - replay events→state │   │  - scan next_run_at<=now  │
+   │  - decide() [PURE]     │   │  - enqueue due tasks/timers│
+   │  - append events       │   └──────────────────────────┘
+   │  - dispatch commands   │
+   └───────┬────────────────┘
+           │ TaskDispatcher.dispatch()         result XADD
+           ▼                                          │
+   ┌──────────────────┐   poll/ack   ┌────────────────┴────────┐
+   │ Redis Streams    │◀────────────▶│ Worker fleet (N, scale)  │
+   │  task:<resource> │              │  - dedup idempotency_key │
+   │  results · dlq   │              │  - run handler, report   │
+   └──────────────────┘              └─────────────────────────┘
+```
+
+### Components (each a bounded, single-purpose module)
+
+1. **API layer** — REST controllers + DTOs.
+2. **DSL parser/validator** — definition JSON → in-memory `WorkflowGraph`; validates the graph at create time.
+3. **Event store** — append-only `execution_events`; `replay(events) → ExecutionState`.
+4. **Engine core** — pure `decide(state, triggerEvent) → (newEvents[], commands[])`; no IO.
+5. **Dispatcher** — executes commands: route Task via `TaskDispatcher`, write `tasks` rows, schedule timers, spawn children, complete executions.
+6. **Result consumer** — reads the `results` stream, appends `TaskSucceeded`/`TaskFailed`, triggers the engine.
+7. **Scheduler/poller** — `@Scheduled` loop scanning due timers + retryable tasks.
+8. **Reaper** — `@Scheduled` `XAUTOCLAIM` of stuck stream entries (worker crash recovery).
+9. **Worker SDK + sample worker** — long-poll, idempotent execute, report.
+10. **DLQ handler** — poison tasks → `dlq` stream; execution failed/inspectable.
+
+### Resource-dispatch abstraction (v2 extension point)
+
+The engine never touches Redis directly. On Task entry it builds `TaskContext {resource, input, parameters?}` and hands it to a router:
+
+```
+interface TaskDispatcher { void dispatch(TaskContext ctx); }
+
+RoutingTaskDispatcher                      // picks by resource scheme
+ ├─ default (plain name)  -> RedisStreamDispatcher    (v1: XADD task:<resource>)
+ └─ scheme:* (e.g. http:invoke, built-in:*) -> BuiltinTaskDispatcher  (v2)
+```
+
+`Parameters` is reserved on the Task model, DSL, and `tasks` row from day one (parsed, stored, passed through, unused in v1), so the built-in layer needs no migration later.
+
 ---
- 
-## What it does
- 
-### Core capabilities
- 
-**Workflow definition.** Developers define workflows as a sequence of named steps with inputs, outputs, and dependencies. Definitions are stored as durable artifacts and reusable across executions.
- 
-**Reliable asynchronous execution.** Each step runs as an independent task on a worker. Steps are dispatched via a message queue, ensuring decoupled execution and natural backpressure under load.
- 
-**Automatic retry with exponential backoff.** Failed tasks are retried with increasing delays (5s → 15s → 45s → ...) until they succeed or exhaust their retry budget.
- 
-**Dead-letter queue for poison messages.** Tasks that fail repeatedly are routed to a DLQ for inspection rather than retried infinitely.
- 
-**Idempotent execution.** Workers detect and safely handle duplicate task deliveries, so side effects like payments, emails, and DB writes never repeat.
- 
-**Crash recovery.** Workflow state is durably persisted. When a worker or the orchestrator crashes, in-flight workflows resume from their last known state — no manual recovery required.
- 
-**Observable execution.** Every workflow exposes its current state, step history, retry count, and timing. A metrics dashboard surfaces queue depth, throughput, error rates, and worker health in real time.
- 
-**Horizontal worker scaling.** Workers are stateless and can be added or removed independently to handle load.
- 
-### What it deliberately does not do
- 
-- No graphical workflow editor or visual DSL — workflows are defined in code or JSON
-- No multi-region replication or cross-datacenter coordination
-- No enterprise features like RBAC, audit logging, or encryption-at-rest
-- Not a production-grade replacement for Temporal, Airflow, or Step Functions
-These omissions are intentional. The goal is to deeply implement the core patterns, not reproduce a commercial product.
- 
+
+## Data model
+
+Postgres is the source of truth. `execution_events` is authoritative; `executions` projection columns and `tasks` are derived/operational. Repurposes the existing tables under the new vocabulary.
+
+**`workflow_definitions`** — immutable definition per version
+```
+id VARCHAR(26) PK · name · version INT · definition JSONB · created_at
+UNIQUE(name, version)        -- edit = new version row; executions pin their version
+```
+
+**`executions`** — a run
+```
+id VARCHAR(26) PK · workflow_definition_id FK · name
+status   -- RUNNING|SUCCEEDED|FAILED|TIMED_OUT|ABORTED   (projection)
+current_state (projection) · input JSONB · output JSONB · error JSONB
+parent_execution_id FK NULL · parent_branch_index INT NULL · root_execution_id FK
+started_at · stopped_at
+UNIQUE(workflow_definition_id, name)   -- StartExecution idempotency
+```
+`status`/`current_state`/`output` are written in the SAME transaction as the event append.
+
+**`execution_events`** — append-only source of truth
+```
+id BIGSERIAL PK · execution_id FK · seq INT · type · state_name NULL · payload JSONB · created_at
+UNIQUE(execution_id, seq) · INDEX(execution_id, seq)
+```
+
+**`tasks`** — dispatch + timer + dedup bookkeeping (operational, not truth)
+```
+id VARCHAR(26) PK · execution_id FK · state_name
+type    -- TASK | TIMER  (TIMER = Wait OR retry backoff delay)
+status  -- SCHEDULED|QUEUED|RUNNING|COMPLETED|FAILED|DLQ
+idempotency_key UNIQUE   -- executionId:stateName:attempt
+attempt · max_attempts · next_run_at · redis_entry_id
+resource NULL · parameters JSONB NULL (reserved) · input JSONB · created_at · updated_at
+INDEX(status, next_run_at) · INDEX(execution_id)
+```
+
+**Event catalog** (replay vocabulary)
+```
+ExecutionStarted   StateEntered          StateExited
+TaskScheduled      TaskStarted           TaskSucceeded
+TaskFailed         TaskTimedOut          RetryScheduled
+WaitStarted        WaitCompleted         ChoiceEvaluated
+ParallelStarted    ParallelBranchFailed  ParallelSucceeded
+MapStarted         MapIterationFailed    MapSucceeded
+ExecutionSucceeded ExecutionFailed       ExecutionAborted   ExecutionTimedOut
+```
+No compensation/saga events. Error handling is Retry + Catch only.
+
+**Derived `ExecutionState`** (in-memory replay output, not a table): `status`, `currentStateName`, `currentData` (the JSON flowing output→input), `retryAttempts` (per state), `pendingChildren` (`{childId → done?}` for fan-in), `waitingTimerId`.
+
 ---
- 
-## How it works
- 
-### High-level mechanism
- 
-A workflow execution flows through three logical layers:
- 
-**The orchestrator** receives a request to start a workflow, persists initial state to the database, and dispatches the first task to the queue. As steps complete, it advances workflow state and dispatches dependent steps.
- 
-**The queue** decouples the orchestrator from workers. Tasks sit in the queue until a worker picks them up. This buffers traffic spikes and lets workers scale independently.
- 
-**Workers** consume tasks, execute the corresponding business logic, and emit completion or failure events back to the system. They are stateless — all coordination happens through the queue and database.
- 
-### Key engineering patterns
- 
-**Durable state through event sourcing.** Every workflow state transition is written as an immutable event to the database. Current state is derived from replaying these events. Recovery becomes deterministic, and auditing becomes trivial.
- 
-**Effectively-once execution via idempotency keys.** Distributed systems cannot guarantee exactly-once delivery. Conduit instead guarantees *effectively-once* execution: every task carries a unique idempotency key, and workers deduplicate based on this key before executing side effects.
- 
-**Saga-style compensation for partial failures.** When a multi-step workflow fails midway, Conduit executes compensating actions in reverse order to undo prior side effects. If step 4 fails after steps 1–3 succeeded, each of steps 1–3 has a compensation handler that runs to roll back its work.
- 
-**Backpressure through queue depth monitoring.** When queue depth grows beyond healthy thresholds, the orchestrator slows down accepting new workflows and emits signals upstream to throttle.
- 
-### The reference workflow
- 
-To make the system concrete, Conduit ships with one demo workflow: **document processing**.
- 
-1. An upload triggers a new workflow execution
-2. An OCR step extracts text from the document
-3. A validation step verifies the extracted data structure
-4. A classification step tags the document type
-5. A persistence step writes the structured data to the database
-6. A notification step sends a webhook or email to the requester
-Each step runs on a separate worker. Failures trigger automatic retries; persistent failures route to the DLQ. Crashes during execution resume cleanly after restart. The demo workflow is the proof that all the engineering primitives work end-to-end.
- 
+
+## DSL
+
+Declarative JSON: top-level `StartAt` + `States` map; each state has `Type` + `Next`/`End:true`. No full JSONPath — dot paths (`$.foo.bar`) only for Choice `Variable`, Map `ItemsPath`, Wait `SecondsPath`.
+
+```json
+{
+  "StartAt": "Ocr",
+  "States": {
+    "Ocr": {
+      "Type": "Task",
+      "Resource": "ocr-handler",
+      "TimeoutSeconds": 30,
+      "Retry": [{ "ErrorEquals": ["TransientError"], "IntervalSeconds": 5, "MaxAttempts": 3, "BackoffRate": 2.0 }],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "HandleFailure" }],
+      "Next": "CheckType"
+    },
+    "CheckType": {
+      "Type": "Choice",
+      "Choices": [{ "Variable": "$.docType", "StringEquals": "invoice", "Next": "ProcessInvoice" }],
+      "Default": "ProcessGeneric"
+    },
+    "ProcessInvoice": { "Type": "Pass", "Next": "Done" },
+    "ProcessGeneric": { "Type": "Pass", "Next": "Done" },
+    "HandleFailure": { "Type": "Fail", "Error": "IngestFailed", "Cause": "ocr exhausted retries" },
+    "Done": { "Type": "Succeed" }
+  }
+}
+```
+
+| State | Key fields | Behavior |
+|---|---|---|
+| **Task** | `Resource`, `Parameters?`, `TimeoutSeconds?`, `Retry?`, `Catch?`, `Next/End` | Dispatch via `TaskDispatcher`; park. Success → output becomes data, go `Next`. Failure → Retry, else Catch, else fail. |
+| **Choice** | `Choices[]` (`Variable` dot-path, operator, `Next`), `Default` | First matching rule → its `Next`; no match → `Default` (or fail `States.NoChoiceMatched`). Instant. |
+| **Pass** | `Result?`, `Next/End` | Inject static `Result` or pass input through. Instant. |
+| **Wait** | `Seconds` \| `SecondsPath`, `Next/End` | Write TIMER row `next_run_at = now + secs`; park; scheduler resumes. |
+| **Succeed** | — | Terminal success; output = current data. |
+| **Fail** | `Error`, `Cause` | Terminal failure. |
+| **Parallel** | `Branches[]`, `Retry?/Catch?`, `Next/End` | One child execution per branch (same input). All succeed → output = `[branch outputs]`. Any fail → Retry/Catch, else fail. |
+| **Map** | `ItemsPath`, `Iterator`, `MaxConcurrency?`, `Retry?/Catch?`, `Next/End` | One child execution per array item (item = child input). Output = `[iteration outputs]` in order. |
+
+Choice operators (v1): `StringEquals`, `NumericEquals/GreaterThan/LessThan/GreaterThanEquals/LessThanEquals`, `BooleanEquals`, `IsPresent`, plus `And`/`Or`/`Not`.
+
+Parallel and Map share one fan-out/fan-in/recovery path; they differ only in child count and child input source.
+
 ---
- 
+
+## Execution loop & error handling
+
+```
+trigger (execution started | result arrived | timer due | child done)
+  └─ load execution_events ──▶ replay() ──▶ ExecutionState
+       └─ decide(state, triggerEvent)        # PURE, no IO
+            ├─ newEvents[]   (StateEntered, TaskScheduled, ...)
+            └─ commands[]    (EnqueueTask, ScheduleTimer, SpawnChildren, CompleteExecution)
+       └─ ONE transaction: append newEvents (seq++) + update executions projection
+       └─ dispatcher runs commands
+```
+Instant states (Choice/Pass) chain within one trigger until reaching a parking state (Task/Wait/Parallel/Map) or a terminal.
+
+- **Retry** — on `TaskFailed`, match `ErrorEquals`; if attempt < `MaxAttempts`, schedule TIMER `delay = IntervalSeconds * BackoffRate^attempt`; emit `RetryScheduled`.
+- **Catch** — retries exhausted / no Retry match → first matching `Catch` → jump to its `Next` (error injected into data).
+- Neither → execution FAILED.
+- Error names: worker strings + built-ins `States.ALL`, `States.Timeout`, `States.TaskFailed`.
+- **DLQ** — task exhausting retries with no Catch → `dlq` stream; execution fails (inspectable; optional redrive).
+
+---
+
+## Worker protocol (Redis Streams)
+
+One stream per resource; workers join a consumer group (competing consumers, independent scaling).
+
+```
+stream:  task:<Resource>      group: <Resource>-workers
+results: shared "results" stream, group "engine"
+dlq:     shared "dlq" stream
+```
+
+Worker loop:
+```
+1. XREADGROUP <Resource>-workers consumer=<id> COUNT 1 BLOCK 5s
+2. dedup: idempotencyKey already COMPLETED -> XACK, skip     (effectively-once)
+3. run registered handler(input)
+4. XADD results { taskId, executionId, status, output|error, cause }
+5. XACK task:<Resource> <entryId>
+```
+
+- **Timeout** — dispatch with `TimeoutSeconds` also writes a TIMER row; fires before result → `TaskTimedOut`.
+- **Crash recovery** — worker dies after read, before ack → entry stuck pending; reaper `XAUTOCLAIM` (idle > N s) reassigns. Late/duplicate result for a terminal task → ignored.
+- **Idempotency key** = `executionId:stateName:attempt`; checked by worker (before side effect) and engine (before applying result).
+- HTTP calls = a handler that uses `RestClient` internally — no new engine concept.
+
+---
+
+## Control-plane API (REST)
+
+```
+POST   /workflow-definitions                  CreateWorkflowDefinition  {name,definition} -> {id,version}
+GET    /workflow-definitions                  ListWorkflowDefinitions
+GET    /workflow-definitions/{id}             DescribeWorkflowDefinition
+
+POST   /workflow-definitions/{id}/executions  StartExecution  {name?,input} -> {executionId}
+GET    /executions/{id}                 DescribeExecution
+GET    /executions/{id}/history         GetExecutionHistory   (ordered audit trail)
+GET    /executions?stateMachineId=&status=   ListExecutions
+POST   /executions/{id}/stop            StopExecution  (cascades to children)
+
+GET    /executions/{id}/tasks           debug: task rows + attempts
+GET    /dlq                             inspect dead-letter entries
+POST   /dlq/{taskId}/redrive            re-enqueue a poison task
+GET    /actuator/health|metrics|prometheus
+```
+Definitions are validated at create (reachability, unknown `Next`, terminal exists, duplicate state names, per-state schema); a new definition for an existing name creates a new version. Resource existence is NOT checked (convention-only).
+
+Metrics (Micrometer → Prometheus): queue depth per stream, executions by status, task attempts/failures, retry count, engine loop latency.
+
+---
+
+## Tech stack
+
+Java 21 · Spring Boot 3.5.x · Spring Web · Spring Data JPA · Liquibase · Postgres · Redis Streams (Spring Data Redis / Lettuce) · Lombok · ULID · Micrometer + Prometheus · JUnit 5 + Testcontainers (Postgres + Redis).
+
+---
+
+## Implementation plan
+
+Phased so each milestone is runnable/testable before the next. The pure engine core is built and unit-tested before any infra.
+
+### Phase 0 — Foundation
+- Add deps: Spring Data Redis, Testcontainers (Postgres + Redis).
+- Fix `application.properties` (` Liquibase` → `# Liquibase`); add Redis config.
+- Rename existing entities/tables to the new vocabulary: `workflows → executions`, `workflow_events → execution_events`, `task_messages → tasks` (`workflow_definitions` kept, gains `version`). New Liquibase changesets reflecting the schema above (add `version`, parent/root columns, `tasks.type/next_run_at/redis_entry_id/resource/parameters`).
+- Populate the empty `Step` enum or remove it (replaced by DSL state types); align `current_step` removal.
+- **Done when:** app boots, migrations apply, `ddl-auto=validate` passes.
+
+### Phase 1 — DSL parser & validator
+- `WorkflowGraph` / `State` model classes (one per state type) + Jackson polymorphic deserialization on `Type`.
+- Graph validator: `StartAt` exists, every `Next` resolves, a terminal is reachable, no duplicate names, per-state required fields.
+- **Done when:** unit tests parse/validate good and bad definitions. No infra.
+
+### Phase 2 — Event store & pure engine core
+- `execution_events` append + `replay(events) → ExecutionState`.
+- Pure `decide(state, triggerEvent) → (newEvents, commands)` for **linear states first**: Task (dispatch + success/fail), Pass, Succeed, Fail.
+- Command + event types.
+- **Done when:** engine unit tests drive a linear Task→Pass→Succeed machine entirely in memory (fake events in, events/commands out). No Redis/DB.
+
+### Phase 3 — Control-plane API
+- Controllers + DTOs: CreateWorkflowDefinition, DescribeWorkflowDefinition, ListWorkflowDefinitions, StartExecution, DescribeExecution, GetExecutionHistory.
+- Persist on start: `ExecutionStarted` event + projection row in one tx.
+- **Done when:** can create a machine and start an execution via HTTP; history readable.
+
+### Phase 4 — Redis dispatch + workers (first end-to-end)
+- `TaskDispatcher` abstraction + `RoutingTaskDispatcher` + `RedisStreamDispatcher` (XADD `task:<resource>`).
+- Result consumer (`XREADGROUP results` → append `TaskSucceeded`/`TaskFailed` → trigger engine).
+- Worker SDK (`register(resource, handler)`, poll/ack/report/dedup) + sample worker with stub handlers.
+- **Done when:** a linear Task workflow runs end-to-end across a real worker over Redis.
+
+### Phase 5 — Durability: scheduler, retries, timeouts, DLQ, recovery
+- `@Scheduled` poller scanning `tasks` for due TIMER + retryable rows.
+- Wait state; Retry with exponential backoff; `TimeoutSeconds`; Catch; DLQ on exhaustion.
+- Reaper `XAUTOCLAIM` for stuck entries; idempotency dedup on both sides.
+- **Done when:** kill-a-worker, duplicate-delivery, and exhaust-retries scenarios behave correctly; engine restart resumes from replay.
+
+### Phase 6 — Choice
+- Choice evaluation (operators + `And`/`Or`/`Not`, dot-path `Variable`), `Default`.
+- **Done when:** branching workflow routes correctly per input; unit + integration tests.
+
+### Phase 7 — Parallel & Map (fan-out / fan-in)
+- Child-execution spawn, parent parking, fan-in aggregation (ordered for Map), `MaxConcurrency`, branch/iteration failure → Retry/Catch.
+- **Done when:** Parallel and Map workflows complete with correct aggregated output and failure handling.
+
+### Phase 8 — Operations & observability
+- StopExecution (cascade), ListExecutions filters, `/dlq` + redrive, `/executions/{id}/tasks`.
+- Micrometer metrics + Prometheus endpoint; sample Grafana dashboard JSON.
+- **Done when:** metrics expose execution/queue/retry signals; stop + redrive work.
+
+### Phase 9 — Hardening
+- Testcontainers integration tests across all state types; crash-recovery and idempotency tests; a basic load test (target throughput on a small VM).
+- README walkthrough a stranger can follow; example workflows.
+- **Done when:** the success criteria below all pass in CI.
+
+---
+
 ## Success criteria
- 
-The project is "done" when all of the following are true:
- 
-1. A workflow can be defined, started via API, and executed to completion across distributed workers
-2. A worker can be killed mid-execution and the workflow resumes correctly after restart
-3. Failed tasks retry with exponential backoff and route to DLQ after exhausting retries
-4. Duplicate task deliveries do not produce duplicate side effects
-5. The system runs in a deployed environment (not just local Docker) with a public URL
-6. A live Grafana dashboard shows real-time workflow metrics
-7. Load tests demonstrate the system handles ≥100 workflows/minute on a 4-core VM
-8. The README contains a clear architecture diagram and a walkthrough a stranger can follow
+
+1. Define a state machine via API, start an execution, run to completion across worker(s).
+2. Sequential Task→Task and Choice branching work end-to-end.
+3. Parallel and Map fan out to child executions and fan in correctly (ordered output for Map).
+4. Failed tasks retry with exponential backoff; exhausted + uncaught → DLQ + execution FAILED.
+5. `Catch` redirects to a handler state on a matched error.
+6. Wait state delays via the scheduler and resumes.
+7. Worker killed mid-task → task reclaimed (`XAUTOCLAIM`) and completes; no duplicate side effect.
+8. Duplicate task/result delivery produces no duplicate effect.
+9. Engine restarted mid-execution → resumes from replayed events; no lost progress.
+10. `GetExecutionHistory` returns a complete, ordered audit trail.
+11. Prometheus metrics expose execution/queue/retry signals.
+
 ---
- 
-## Out of scope (for v1)
- 
-- Workflow versioning and migration
-- Conditional branching and parallel step execution (v1 is sequential only)
-- Multi-tenancy with execution isolation
-- Authentication and authorization
-- Encrypted state storage
-- Multi-region deployment
-These become candidate v2 goals if the project lands well and there's appetite to keep building.
- 
----
- 
-## Why this matters
- 
-Workflow orchestration sits at the intersection of distributed systems, reliability engineering, and async architecture — three areas that distinguish senior engineers from mid-level ones. Building one from scratch demonstrates the author understands not just how to *use* Temporal or Step Functions, but how they work internally and why they make the tradeoffs they do.
- 
-The patterns implemented here — event sourcing, idempotency, sagas, backpressure, exponential backoff — are the same patterns that show up in payment systems, distributed databases, and large-scale data pipelines. Mastering them in a small, self-built system makes them legible at any scale.
+
+## Out of scope (v2)
+
+Built-in/system resources (`http:invoke`); resource registry + capability defaults + input JSON-Schema validation; path-based data flow (InputPath/ResultPath/OutputPath, full JSONPath); worker self-registration + heartbeat; multi-instance engine coordination (optimistic/advisory locking); definition versioning migration tooling; auth/RBAC; encryption-at-rest; multi-region.

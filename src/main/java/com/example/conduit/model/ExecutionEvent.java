@@ -12,29 +12,31 @@ import org.hibernate.type.SqlTypes;
 import java.time.Instant;
 
 @Entity
-@Table(name = "workflow_events")
+@Table(name = "execution_events",
+        uniqueConstraints = @UniqueConstraint(name = "uq_execution_events_execution_id_seq",
+                columnNames = {"execution_id", "seq"}))
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class WorkflowEvent {
+public class ExecutionEvent {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "workflow_id", nullable = false)
-    private String workflowId;
+    @Column(name = "execution_id", nullable = false)
+    private String executionId;
 
     @Column(name = "seq", nullable = false)
     private Integer seq;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "event_type", nullable = false)
-    private EventType eventType;
+    @Column(name = "type", nullable = false)
+    private EventType type;
 
-    @Column(name = "step_name")
-    private String stepName;
+    @Column(name = "state_name")
+    private String stateName;
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "payload", columnDefinition = "jsonb")

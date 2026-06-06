@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <changeSet id="4" author="sahil">
+        <createTable tableName="tasks">
+            <column name="id" type="VARCHAR(26)">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="execution_id" type="VARCHAR(26)">
+                <constraints nullable="false"
+                             foreignKeyName="fk_tasks_execution_id"
+                             references="executions(id)"/>
+            </column>
+            <column name="state_name" type="VARCHAR(100)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="type" type="VARCHAR(50)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="status" type="VARCHAR(50)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="idempotency_key" type="VARCHAR(255)"/>
+            <column name="attempt" type="INTEGER"/>
+            <column name="max_attempts" type="INTEGER"/>
+            <column name="next_run_at" type="TIMESTAMP WITH TIME ZONE"/>
+            <column name="redis_entry_id" type="VARCHAR(255)"/>
+            <column name="resource" type="VARCHAR(255)"/>
+            <column name="parameters" type="JSONB"/>
+            <column name="input" type="JSONB"/>
+            <column name="creation_time" type="TIMESTAMP WITH TIME ZONE"/>
+            <column name="last_updated_time" type="TIMESTAMP WITH TIME ZONE"/>
+        </createTable>
+
+        <addUniqueConstraint tableName="tasks"
+                             columnNames="idempotency_key"
+                             constraintName="uq_tasks_idempotency_key"/>
+
+        <createIndex tableName="tasks" indexName="idx_tasks_status_next_run_at">
+            <column name="status"/>
+            <column name="next_run_at"/>
+        </createIndex>
+
+        <createIndex tableName="tasks" indexName="idx_tasks_execution_id">
+            <column name="execution_id"/>
+        </createIndex>
+    </changeSet>
+
+</databaseChangeLog>

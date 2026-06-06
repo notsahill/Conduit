@@ -1,8 +1,10 @@
 package com.example.conduit.enums;
 
 public enum TaskStatus {
-    PENDING,
-    PROCESSING,
+    SCHEDULED,
+    QUEUED,
+    RUNNING,
     COMPLETED,
-    FAILED
+    FAILED,
+    DLQ
 }
