@@ -5,15 +5,21 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.PendingMessage;
+import org.springframework.data.redis.connection.stream.PendingMessages;
 import org.springframework.data.redis.connection.stream.ReadOffset;
+import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.data.redis.connection.stream.StreamReadOptions;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -68,6 +74,34 @@ public class WorkerRuntime {
         return records.size();
     }
 
+    /**
+     * Reclaims entries left pending by a crashed worker: any that have been idle at least
+     * {@code minIdleMs} since last delivery are XCLAIMed to {@code consumer} and reprocessed. This is
+     * the crash-recovery path — a worker that died after read, before ack, no longer strands its task.
+     */
+    public int reclaim(String resource, String consumer, long minIdleMs) {
+        String stream = "task:" + resource;
+        String group = resource + "-workers";
+        ensureGroup(stream, group);
+
+        PendingMessages pending = redis.opsForStream().pending(stream, group, Range.unbounded(), 100);
+        List<RecordId> stale = new ArrayList<>();
+        for (PendingMessage message : pending) {
+            if (message.getElapsedTimeSinceLastDelivery().toMillis() >= minIdleMs) {
+                stale.add(message.getId());
+            }
+        }
+        if (stale.isEmpty()) {
+            return 0;
+        }
+        List<MapRecord<String, Object, Object>> claimed = redis.opsForStream().claim(
+                stream, group, consumer, Duration.ofMillis(minIdleMs), stale.toArray(new RecordId[0]));
+        for (MapRecord<String, Object, Object> record : claimed) {
+            process(resource, stream, group, record);
+        }
+        return claimed.size();
+    }
+
     private void process(String resource, String stream, String group, MapRecord<String, Object, Object> record) {
         Map<Object, Object> f = record.getValue();
         String idempotencyKey = str(f, "idempotencyKey");
@@ -80,6 +114,7 @@ public class WorkerRuntime {
         result.put("taskId", str(f, "taskId"));
         result.put("executionId", str(f, "executionId"));
         result.put("stateName", str(f, "stateName"));
+        result.put("attempt", str(f, "attempt"));
         try {
             TaskHandler handler = handlers.get(resource);
             if (handler == null) {

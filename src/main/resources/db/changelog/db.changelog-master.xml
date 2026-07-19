@@ -9,5 +9,6 @@
     <include file="db/changelog/changes/V2__create_executions.xml"/>
     <include file="db/changelog/changes/V3__create_execution_events.xml"/>
     <include file="db/changelog/changes/V4__create_tasks.xml"/>
+    <include file="db/changelog/changes/V5__add_timer_kind.xml"/>
 
 </databaseChangeLog>

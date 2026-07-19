@@ -47,7 +47,7 @@ class EngineLoopTest {
         assertThat(allCommands).last().isInstanceOf(EnqueueTask.class);
 
         // Trigger 2 — the worker reports success. Engine flows through the instant Pass to Succeed.
-        TaskSucceeded taskDone = new TaskSucceeded("Ocr", ocrOutput);
+        TaskSucceeded taskDone = new TaskSucceeded("Ocr", 1, ocrOutput);
         log.add(taskDone);
         drive(graph, log, allCommands, taskDone);
 

@@ -62,10 +62,11 @@ public class ResultConsumer {
         String executionId = str(f, "executionId");
         String stateName = str(f, "stateName");
         String status = str(f, "status");
+        int attempt = Integer.parseInt(str(f, "attempt"));
         if ("SUCCEEDED".equals(status)) {
-            engineService.trigger(executionId, new TaskSucceeded(stateName, readJson(str(f, "output"))));
+            engineService.trigger(executionId, new TaskSucceeded(stateName, attempt, readJson(str(f, "output"))));
         } else {
-            engineService.trigger(executionId, new TaskFailed(stateName, str(f, "error"), str(f, "cause")));
+            engineService.trigger(executionId, new TaskFailed(stateName, attempt, str(f, "error"), str(f, "cause")));
         }
     }
 

@@ -60,6 +60,9 @@ public class Task extends AuditableEntity {
     @Column(name = "redis_entry_id")
     private String redisEntryId;
 
+    @Column(name = "timer_kind")
+    private String timerKind;
+
     @Column(name = "resource")
     private String resource;
 

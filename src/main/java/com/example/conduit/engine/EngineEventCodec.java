@@ -41,8 +41,13 @@ public class EngineEventCodec {
             case STATE_EXITED -> new StateExited(state, field(p, "output"));
             case TASK_SCHEDULED -> new TaskScheduled(state, p.get("resource").asText(),
                     p.get("attempt").asInt(), field(p, "input"));
-            case TASK_SUCCEEDED -> new TaskSucceeded(state, field(p, "output"));
-            case TASK_FAILED -> new TaskFailed(state, text(p, "error"), text(p, "cause"));
+            case TASK_SUCCEEDED -> new TaskSucceeded(state, p.get("attempt").asInt(), field(p, "output"));
+            case TASK_FAILED -> new TaskFailed(state, p.get("attempt").asInt(), text(p, "error"), text(p, "cause"));
+            case TASK_TIMED_OUT -> new TaskTimedOut(state, p.get("attempt").asInt());
+            case WAIT_STARTED -> new WaitStarted(state, p.get("seconds").asInt());
+            case WAIT_COMPLETED -> new WaitCompleted(state);
+            case RETRY_SCHEDULED -> new RetryScheduled(state, p.get("attempt").asInt(), p.get("seconds").asInt());
+            case RETRY_DUE -> new RetryDue(state);
             case EXECUTION_SUCCEEDED -> new ExecutionSucceeded(field(p, "output"));
             case EXECUTION_FAILED -> new ExecutionFailed(text(p, "error"), text(p, "cause"));
             default -> throw new IllegalArgumentException("cannot decode event type " + row.getType());
@@ -57,6 +62,11 @@ public class EngineEventCodec {
             case TaskScheduled ignored -> EventType.TASK_SCHEDULED;
             case TaskSucceeded ignored -> EventType.TASK_SUCCEEDED;
             case TaskFailed ignored -> EventType.TASK_FAILED;
+            case TaskTimedOut ignored -> EventType.TASK_TIMED_OUT;
+            case WaitStarted ignored -> EventType.WAIT_STARTED;
+            case WaitCompleted ignored -> EventType.WAIT_COMPLETED;
+            case RetryScheduled ignored -> EventType.RETRY_SCHEDULED;
+            case RetryDue ignored -> EventType.RETRY_DUE;
             case ExecutionSucceeded ignored -> EventType.EXECUTION_SUCCEEDED;
             case ExecutionFailed ignored -> EventType.EXECUTION_FAILED;
         };
@@ -69,6 +79,11 @@ public class EngineEventCodec {
             case TaskScheduled e -> e.state();
             case TaskSucceeded e -> e.state();
             case TaskFailed e -> e.state();
+            case TaskTimedOut e -> e.state();
+            case WaitStarted e -> e.state();
+            case WaitCompleted e -> e.state();
+            case RetryScheduled e -> e.state();
+            case RetryDue e -> e.state();
             case ExecutionStarted ignored -> null;
             case ExecutionSucceeded ignored -> null;
             case ExecutionFailed ignored -> null;
@@ -86,11 +101,23 @@ public class EngineEventCodec {
                 p.put("attempt", e.attempt());
                 p.set("input", mapper.valueToTree(e.input()));
             }
-            case TaskSucceeded e -> p.set("output", mapper.valueToTree(e.output()));
+            case TaskSucceeded e -> {
+                p.put("attempt", e.attempt());
+                p.set("output", mapper.valueToTree(e.output()));
+            }
             case TaskFailed e -> {
+                p.put("attempt", e.attempt());
                 p.put("error", e.error());
                 p.put("cause", e.cause());
             }
+            case TaskTimedOut e -> p.put("attempt", e.attempt());
+            case WaitStarted e -> p.put("seconds", e.seconds());
+            case WaitCompleted ignored -> { /* state is a column; no payload */ }
+            case RetryScheduled e -> {
+                p.put("attempt", e.attempt());
+                p.put("seconds", e.seconds());
+            }
+            case RetryDue ignored -> { /* state is a column; no payload */ }
             case ExecutionSucceeded e -> p.set("output", mapper.valueToTree(e.output()));
             case ExecutionFailed e -> {
                 p.put("error", e.error());

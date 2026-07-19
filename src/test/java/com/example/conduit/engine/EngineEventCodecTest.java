@@ -26,8 +26,13 @@ class EngineEventCodecTest {
                 new StateEntered("Ocr"),
                 new StateExited("Ocr", new TextNode("out")),
                 new TaskScheduled("Ocr", "ocr-handler", 1, new IntNode(7)),
-                new TaskSucceeded("Ocr", new TextNode("done")),
-                new TaskFailed("Ocr", "BadThing", "boom"),
+                new TaskSucceeded("Ocr", 2, new TextNode("done")),
+                new TaskFailed("Ocr", 2, "BadThing", "boom"),
+                new TaskTimedOut("Ocr", 3),
+                new WaitStarted("Hold", 5),
+                new WaitCompleted("Hold"),
+                new RetryScheduled("Ocr", 2, 4),
+                new RetryDue("Ocr"),
                 new ExecutionSucceeded(new TextNode("final")),
                 new ExecutionFailed("States.TaskFailed", "gave up"));
 

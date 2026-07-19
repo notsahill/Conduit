@@ -10,6 +10,7 @@ public enum EventType {
     TASK_FAILED,
     TASK_TIMED_OUT,
     RETRY_SCHEDULED,
+    RETRY_DUE,
     WAIT_STARTED,
     WAIT_COMPLETED,
     CHOICE_EVALUATED,

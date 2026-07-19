@@ -52,7 +52,7 @@ class EngineTest {
     void taskSuccessTransitionsToNextAndCompletes() {
         Object input = Map.of("doc", "invoice.pdf");
         Object out = Map.of("text", "hello");
-        TaskSucceeded trigger = new TaskSucceeded("Ocr", out);
+        TaskSucceeded trigger = new TaskSucceeded("Ocr", 1, out);
         ExecutionState state = Replay.replay(List.of(
                 new ExecutionStarted(input),
                 new StateEntered("Ocr"),
@@ -87,7 +87,7 @@ class EngineTest {
         WorkflowGraph graph = DslParser.parse(json);
         Object out = Map.of("text", "hello");
         Object tagged = Map.of("tagged", true);
-        TaskSucceeded trigger = new TaskSucceeded("Ocr", out);
+        TaskSucceeded trigger = new TaskSucceeded("Ocr", 1, out);
 
         DecideResult result = Engine.decide(graph, Replay.replay(List.of(trigger)), trigger);
 
@@ -105,12 +105,13 @@ class EngineTest {
     }
 
     @Test
-    void taskFailureWithoutRetryOrCatchFailsExecution() {
-        TaskFailed trigger = new TaskFailed("Ocr", "TransientError", "ocr blew up");
+    void taskFailureWithoutRetryOrCatchFailsExecutionAndDeadLetters() {
+        Object input = Map.of("doc", "x");
+        TaskFailed trigger = new TaskFailed("Ocr", 1, "TransientError", "ocr blew up");
         ExecutionState state = Replay.replay(List.of(
-                new ExecutionStarted(Map.of("doc", "x")),
+                new ExecutionStarted(input),
                 new StateEntered("Ocr"),
-                new TaskScheduled("Ocr", "ocr-handler", 1, Map.of("doc", "x")),
+                new TaskScheduled("Ocr", "ocr-handler", 1, input),
                 trigger
         ));
 
@@ -119,8 +120,13 @@ class EngineTest {
         assertThat(result.events()).containsExactly(
                 new ExecutionFailed("TransientError", "ocr blew up")
         );
-        assertThat(result.commands()).singleElement()
-                .isInstanceOfSatisfying(CompleteExecution.class, cmd ->
-                        assertThat(cmd.status()).isEqualTo(ExecutionStatus.FAILED));
+        assertThat(result.commands()).anySatisfy(cmd ->
+                assertThat(cmd).isInstanceOfSatisfying(CompleteExecution.class, c ->
+                        assertThat(c.status()).isEqualTo(ExecutionStatus.FAILED)));
+        assertThat(result.commands()).anySatisfy(cmd ->
+                assertThat(cmd).isInstanceOfSatisfying(SendToDlq.class, dlq -> {
+                    assertThat(dlq.state()).isEqualTo("Ocr");
+                    assertThat(dlq.error()).isEqualTo("TransientError");
+                }));
     }
 }

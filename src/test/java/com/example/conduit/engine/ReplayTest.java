@@ -30,7 +30,7 @@ class ReplayTest {
                 new ExecutionStarted(input),
                 new StateEntered("Ocr"),
                 new TaskScheduled("Ocr", "ocr-handler", 1, input),
-                new TaskSucceeded("Ocr", out),
+                new TaskSucceeded("Ocr", 1, out),
                 new StateExited("Ocr", out),
                 new StateEntered("Done"),
                 new ExecutionSucceeded(out)

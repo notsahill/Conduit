@@ -92,16 +92,26 @@ public class EngineService {
     }
 
     /**
-     * A task result / timer whose execution is already terminal, or that targets a state the machine
-     * has moved past, is a duplicate or stale redelivery. Applying it would double-advance the log,
-     * so it is dropped. (Engine-side state stays exactly-once regardless of handler idempotency.)
+     * A trigger whose execution is already terminal, that targets a state the machine has moved past,
+     * or (for task results/timeouts) that belongs to a superseded attempt is a duplicate or stale
+     * redelivery. Applying it would double-advance the log, so it is dropped. Engine-side state stays
+     * exactly-once regardless of handler idempotency.
      */
     private boolean isNoOp(ExecutionState state, EngineEvent trigger) {
         return switch (trigger) {
-            case TaskSucceeded ts -> isTerminal(state) || !ts.state().equals(state.currentStateName());
-            case TaskFailed tf -> isTerminal(state) || !tf.state().equals(state.currentStateName());
+            case TaskSucceeded ts -> staleTaskEvent(state, ts.state(), ts.attempt());
+            case TaskFailed tf -> staleTaskEvent(state, tf.state(), tf.attempt());
+            case TaskTimedOut tt -> staleTaskEvent(state, tt.state(), tt.attempt());
+            case WaitCompleted wc -> isTerminal(state) || !wc.state().equals(state.currentStateName());
+            case RetryDue rd -> isTerminal(state) || !rd.state().equals(state.currentStateName());
             default -> false;
         };
+    }
+
+    private boolean staleTaskEvent(ExecutionState state, String stateName, int attempt) {
+        return isTerminal(state)
+                || !stateName.equals(state.currentStateName())
+                || attempt != state.attemptOf(stateName);
     }
 
     private boolean isTerminal(ExecutionState state) {

@@ -8,5 +8,6 @@ package com.example.conduit.engine;
  */
 public sealed interface EngineEvent
         permits ExecutionStarted, StateEntered, StateExited, TaskScheduled,
-        TaskSucceeded, TaskFailed, ExecutionSucceeded, ExecutionFailed {
+        TaskSucceeded, TaskFailed, ExecutionSucceeded, ExecutionFailed,
+        WaitStarted, WaitCompleted, RetryScheduled, RetryDue, TaskTimedOut {
 }

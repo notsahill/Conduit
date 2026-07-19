@@ -79,7 +79,7 @@ class EngineServiceIntegrationTest {
         String execId = seedRunningExecution();
         engineService.trigger(execId, new ExecutionStarted(new TextNode("scan.pdf")));
 
-        engineService.trigger(execId, new TaskSucceeded("Ocr", new TextNode("EXTRACTED")));
+        engineService.trigger(execId, new TaskSucceeded("Ocr", 1, new TextNode("EXTRACTED")));
 
         Execution exec = executionRepository.findById(execId).orElseThrow();
         assertThat(exec.getStatus()).isEqualTo(ExecutionStatus.SUCCEEDED);
@@ -97,10 +97,10 @@ class EngineServiceIntegrationTest {
     void duplicateResultForTerminalExecutionIsNoOp() {
         String execId = seedRunningExecution();
         engineService.trigger(execId, new ExecutionStarted(new TextNode("scan.pdf")));
-        engineService.trigger(execId, new TaskSucceeded("Ocr", new TextNode("EXTRACTED")));
+        engineService.trigger(execId, new TaskSucceeded("Ocr", 1, new TextNode("EXTRACTED")));
         int before = eventRepository.findByExecutionIdOrderBySeqAsc(execId).size();
 
-        engineService.trigger(execId, new TaskSucceeded("Ocr", new TextNode("EXTRACTED")));
+        engineService.trigger(execId, new TaskSucceeded("Ocr", 1, new TextNode("EXTRACTED")));
 
         assertThat(eventRepository.findByExecutionIdOrderBySeqAsc(execId)).hasSize(before);
     }
