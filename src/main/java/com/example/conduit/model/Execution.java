@@ -13,6 +13,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -44,15 +45,15 @@ public class Execution extends AuditableEntity {
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "input", nullable = false, columnDefinition = "jsonb")
-    private Object input;
+    private JsonNode input;
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "output", columnDefinition = "jsonb")
-    private Object output;
+    private JsonNode output;
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "error", columnDefinition = "jsonb")
-    private Object error;
+    private JsonNode error;
 
     @Column(name = "parent_execution_id")
     private String parentExecutionId;

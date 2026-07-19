@@ -10,6 +10,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -32,6 +33,6 @@ public class WorkflowDefinition extends AuditableEntity {
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "definition", nullable = false, columnDefinition = "jsonb")
-    private Object definition;
+    private JsonNode definition;
 
 }
