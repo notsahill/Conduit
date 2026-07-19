@@ -45,6 +45,7 @@ public final class Replay {
             case RetryScheduled ignored -> state;
             case RetryDue ignored -> state;
             case TaskTimedOut ignored -> state;
+            case ChoiceEvaluated ignored -> state;
         };
     }
 

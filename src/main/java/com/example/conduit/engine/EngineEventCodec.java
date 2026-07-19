@@ -48,6 +48,7 @@ public class EngineEventCodec {
             case WAIT_COMPLETED -> new WaitCompleted(state);
             case RETRY_SCHEDULED -> new RetryScheduled(state, p.get("attempt").asInt(), p.get("seconds").asInt());
             case RETRY_DUE -> new RetryDue(state);
+            case CHOICE_EVALUATED -> new ChoiceEvaluated(state, text(p, "next"));
             case EXECUTION_SUCCEEDED -> new ExecutionSucceeded(field(p, "output"));
             case EXECUTION_FAILED -> new ExecutionFailed(text(p, "error"), text(p, "cause"));
             default -> throw new IllegalArgumentException("cannot decode event type " + row.getType());
@@ -67,6 +68,7 @@ public class EngineEventCodec {
             case WaitCompleted ignored -> EventType.WAIT_COMPLETED;
             case RetryScheduled ignored -> EventType.RETRY_SCHEDULED;
             case RetryDue ignored -> EventType.RETRY_DUE;
+            case ChoiceEvaluated ignored -> EventType.CHOICE_EVALUATED;
             case ExecutionSucceeded ignored -> EventType.EXECUTION_SUCCEEDED;
             case ExecutionFailed ignored -> EventType.EXECUTION_FAILED;
         };
@@ -84,6 +86,7 @@ public class EngineEventCodec {
             case WaitCompleted e -> e.state();
             case RetryScheduled e -> e.state();
             case RetryDue e -> e.state();
+            case ChoiceEvaluated e -> e.state();
             case ExecutionStarted ignored -> null;
             case ExecutionSucceeded ignored -> null;
             case ExecutionFailed ignored -> null;
@@ -118,6 +121,7 @@ public class EngineEventCodec {
                 p.put("seconds", e.seconds());
             }
             case RetryDue ignored -> { /* state is a column; no payload */ }
+            case ChoiceEvaluated e -> p.put("next", e.next());
             case ExecutionSucceeded e -> p.set("output", mapper.valueToTree(e.output()));
             case ExecutionFailed e -> {
                 p.put("error", e.error());

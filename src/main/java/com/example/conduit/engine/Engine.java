@@ -1,6 +1,7 @@
 package com.example.conduit.engine;
 
 import com.example.conduit.dsl.Catcher;
+import com.example.conduit.dsl.ChoiceState;
 import com.example.conduit.dsl.FailState;
 import com.example.conduit.dsl.PassState;
 import com.example.conduit.dsl.Retrier;
@@ -28,6 +29,7 @@ public final class Engine {
     static final int MAX_INSTANT_TRANSITIONS = 1000;
     static final String TIMEOUT_ERROR = "States.Timeout";
     static final String INFINITE_LOOP_ERROR = "States.InfiniteLoop";
+    static final String NO_CHOICE_MATCHED_ERROR = "States.NoChoiceMatched";
     private static final String ALL_ERRORS = "States.ALL";
 
     private Engine() {
@@ -74,6 +76,16 @@ public final class Engine {
                 int seconds = waitSeconds(wait, data);
                 events.add(new WaitStarted(name, seconds));
                 commands.add(new ScheduleTimer(name, TimerKind.WAIT, seconds, 0));
+            }
+            case ChoiceState choice -> {
+                String next = ChoiceEvaluator.evaluate(choice, data);
+                if (next == null) {
+                    failExecution(events, commands, NO_CHOICE_MATCHED_ERROR,
+                            "no Choice rule matched and no Default");
+                } else {
+                    events.add(new ChoiceEvaluated(name, next));
+                    enterState(graph, next, data, state, events, commands, depth + 1);
+                }
             }
             case SucceedState ignored -> complete(events, commands, data);
             case FailState fail -> failExecution(events, commands, fail.error(), fail.cause());
@@ -176,29 +188,11 @@ public final class Engine {
         if (wait.seconds() != null) {
             return wait.seconds();
         }
-        JsonNode node = dotPath(data, wait.secondsPath());
+        JsonNode node = JsonPaths.resolve(data, wait.secondsPath());
         if (node == null || !node.isNumber()) {
             throw new IllegalStateException("Wait SecondsPath '" + wait.secondsPath() + "' did not resolve a number");
         }
         return node.asInt();
-    }
-
-    /** Minimal dot-path lookup ({@code $.a.b}) over the JSON data. Full JSONPath is out of scope (v2). */
-    private static JsonNode dotPath(Object data, String path) {
-        if (!(data instanceof JsonNode node) || path == null) {
-            return null;
-        }
-        String p = path.startsWith("$.") ? path.substring(2) : path.startsWith("$") ? path.substring(1) : path;
-        for (String segment : p.split("\\.")) {
-            if (segment.isEmpty()) {
-                continue;
-            }
-            node = node.get(segment);
-            if (node == null) {
-                return null;
-            }
-        }
-        return node;
     }
 
     private static Object errorData(String error, String cause) {
