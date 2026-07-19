@@ -10,5 +10,5 @@ public sealed interface EngineEvent
         permits ExecutionStarted, StateEntered, StateExited, TaskScheduled,
         TaskSucceeded, TaskFailed, ExecutionSucceeded, ExecutionFailed,
         WaitStarted, WaitCompleted, RetryScheduled, RetryDue, TaskTimedOut,
-        ChoiceEvaluated, ChildrenSpawned, ChildSucceeded, ChildFailed {
+        ChoiceEvaluated, ChildrenSpawned, ChildSucceeded, ChildFailed, ExecutionAborted {
 }

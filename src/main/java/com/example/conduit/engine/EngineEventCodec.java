@@ -54,6 +54,7 @@ public class EngineEventCodec {
             case CHILD_FAILED -> new ChildFailed(state, p.get("index").asInt(), text(p, "error"), text(p, "cause"));
             case EXECUTION_SUCCEEDED -> new ExecutionSucceeded(field(p, "output"));
             case EXECUTION_FAILED -> new ExecutionFailed(text(p, "error"), text(p, "cause"));
+            case EXECUTION_ABORTED -> new ExecutionAborted(text(p, "cause"));
             default -> throw new IllegalArgumentException("cannot decode event type " + row.getType());
         };
     }
@@ -77,6 +78,7 @@ public class EngineEventCodec {
             case ChildFailed ignored -> EventType.CHILD_FAILED;
             case ExecutionSucceeded ignored -> EventType.EXECUTION_SUCCEEDED;
             case ExecutionFailed ignored -> EventType.EXECUTION_FAILED;
+            case ExecutionAborted ignored -> EventType.EXECUTION_ABORTED;
         };
     }
 
@@ -99,6 +101,7 @@ public class EngineEventCodec {
             case ExecutionStarted ignored -> null;
             case ExecutionSucceeded ignored -> null;
             case ExecutionFailed ignored -> null;
+            case ExecutionAborted ignored -> null;
         };
     }
 
@@ -146,6 +149,7 @@ public class EngineEventCodec {
                 p.put("error", e.error());
                 p.put("cause", e.cause());
             }
+            case ExecutionAborted e -> p.put("cause", e.cause());
         }
         return p;
     }

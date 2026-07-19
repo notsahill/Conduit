@@ -7,8 +7,10 @@ import com.example.conduit.engine.ExecutionStarted;
 import com.example.conduit.enums.ExecutionStatus;
 import com.example.conduit.model.Execution;
 import com.example.conduit.model.ExecutionEvent;
+import com.example.conduit.model.Task;
 import com.example.conduit.repository.ExecutionEventRepository;
 import com.example.conduit.repository.ExecutionRepository;
+import com.example.conduit.repository.TaskRepository;
 import com.example.conduit.repository.WorkflowDefinitionRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -25,19 +27,49 @@ public class ExecutionService {
     private final WorkflowDefinitionRepository definitionRepository;
     private final ExecutionRepository executionRepository;
     private final ExecutionEventRepository eventRepository;
+    private final TaskRepository taskRepository;
     private final EngineService engineService;
     private final ObjectMapper objectMapper;
 
     public ExecutionService(WorkflowDefinitionRepository definitionRepository,
                             ExecutionRepository executionRepository,
                             ExecutionEventRepository eventRepository,
+                            TaskRepository taskRepository,
                             EngineService engineService,
                             ObjectMapper objectMapper) {
         this.definitionRepository = definitionRepository;
         this.executionRepository = executionRepository;
         this.eventRepository = eventRepository;
+        this.taskRepository = taskRepository;
         this.engineService = engineService;
         this.objectMapper = objectMapper;
+    }
+
+    @Transactional(readOnly = true)
+    public List<Execution> list(String workflowDefinitionId, ExecutionStatus status) {
+        if (workflowDefinitionId != null && status != null) {
+            return executionRepository.findByWorkflowDefinitionIdAndStatus(workflowDefinitionId, status);
+        }
+        if (workflowDefinitionId != null) {
+            return executionRepository.findByWorkflowDefinitionId(workflowDefinitionId);
+        }
+        if (status != null) {
+            return executionRepository.findByStatus(status);
+        }
+        return executionRepository.findAll();
+    }
+
+    @Transactional(readOnly = true)
+    public List<Task> tasks(String executionId) {
+        if (!executionRepository.existsById(executionId)) {
+            throw new NotFoundException("execution '" + executionId + "' not found");
+        }
+        return taskRepository.findByExecutionId(executionId);
+    }
+
+    /** StopExecution: aborts the run and cascades to running children (delegated to the engine loop). */
+    public void stop(String executionId) {
+        engineService.stop(executionId);
     }
 
     /**

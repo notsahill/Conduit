@@ -29,6 +29,7 @@ public final class Replay {
             case TaskScheduled e -> with(state).attempts(incremented(state.taskAttempts(), e.state())).build();
             case ExecutionSucceeded e -> with(state).status(ExecutionStatus.SUCCEEDED).data(e.output()).build();
             case ExecutionFailed ignored -> with(state).status(ExecutionStatus.FAILED).build();
+            case ExecutionAborted ignored -> with(state).status(ExecutionStatus.ABORTED).build();
             case ChildrenSpawned e -> with(state).childProgress(
                     put(state.childProgress(), e.state(), new ChildProgress(e.count(), Map.of(), false, null, null))).build();
             case ChildSucceeded e -> with(state).childProgress(recordChild(state, e.state(), e.index(), e.output())).build();

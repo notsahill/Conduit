@@ -72,6 +72,43 @@ public class EngineService {
         }
     }
 
+    /**
+     * StopExecution: aborts a running execution and cascades to its running children. Each abort runs
+     * under the per-execution lock and appends an {@code ExecutionAborted} event, so the stop is
+     * durable and replay-consistent. Already-terminal executions are left untouched.
+     */
+    public void stop(String executionId) {
+        List<String> runningChildren = txTemplate.execute(status -> abort(executionId));
+        if (runningChildren != null) {
+            for (String childId : runningChildren) {
+                stop(childId);
+            }
+        }
+    }
+
+    private List<String> abort(String executionId) {
+        Execution execution = executionRepository.findByIdForUpdate(executionId)
+                .orElseThrow(() -> new NotFoundException("execution '" + executionId + "' not found"));
+
+        List<ExecutionEvent> rows = eventRepository.findByExecutionIdOrderBySeqAsc(executionId);
+        List<EngineEvent> log = new ArrayList<>(rows.stream().map(codec::fromRow).toList());
+        if (isTerminal(Replay.replay(log))) {
+            return List.of(); // already SUCCEEDED/FAILED/ABORTED — nothing to stop or cascade
+        }
+
+        EngineEvent aborted = new ExecutionAborted("stopped by operator");
+        log.add(aborted);
+        eventRepository.save(codec.toRow(executionId, rows.size(), aborted));
+        project(execution, Replay.replay(log), List.of());
+        execution.setStoppedAt(Instant.now());
+        executionRepository.save(execution);
+
+        return executionRepository.findByParentExecutionId(executionId).stream()
+                .filter(child -> child.getStatus() == ExecutionStatus.RUNNING)
+                .map(Execution::getId)
+                .toList();
+    }
+
     private AppendResult append(String executionId, EngineEvent triggerEvent) {
         Execution execution = executionRepository.findByIdForUpdate(executionId)
                 .orElseThrow(() -> new NotFoundException("execution '" + executionId + "' not found"));

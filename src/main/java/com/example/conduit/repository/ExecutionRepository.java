@@ -1,5 +1,6 @@
 package com.example.conduit.repository;
 
+import com.example.conduit.enums.ExecutionStatus;
 import com.example.conduit.model.Execution;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -9,6 +10,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 
 @Repository
@@ -26,4 +28,13 @@ public interface ExecutionRepository extends JpaRepository<Execution, String>, J
     /** Guards child spawning so a re-dispatched Parallel/Map fan-out never double-spawns an index. */
     boolean existsByParentExecutionIdAndBranchStateAndParentBranchIndex(
             String parentExecutionId, String branchState, Integer parentBranchIndex);
+
+    /** Direct children of an execution (for StopExecution cascade). */
+    List<Execution> findByParentExecutionId(String parentExecutionId);
+
+    List<Execution> findByWorkflowDefinitionId(String workflowDefinitionId);
+
+    List<Execution> findByStatus(ExecutionStatus status);
+
+    List<Execution> findByWorkflowDefinitionIdAndStatus(String workflowDefinitionId, ExecutionStatus status);
 }
