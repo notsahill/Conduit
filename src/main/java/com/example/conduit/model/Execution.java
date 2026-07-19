@@ -61,6 +61,9 @@ public class Execution extends AuditableEntity {
     @Column(name = "parent_branch_index")
     private Integer parentBranchIndex;
 
+    @Column(name = "branch_state")
+    private String branchState;
+
     @Column(name = "root_execution_id", nullable = false)
     private String rootExecutionId;
 

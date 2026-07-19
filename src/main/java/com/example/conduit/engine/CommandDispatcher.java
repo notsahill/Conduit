@@ -2,12 +2,16 @@ package com.example.conduit.engine;
 
 import com.example.conduit.dispatch.TaskContext;
 import com.example.conduit.dispatch.TaskDispatcher;
+import com.example.conduit.enums.ExecutionStatus;
 import com.example.conduit.enums.TaskStatus;
 import com.example.conduit.enums.TaskType;
+import com.example.conduit.model.Execution;
 import com.example.conduit.model.Task;
+import com.example.conduit.repository.ExecutionRepository;
 import com.example.conduit.repository.TaskRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -28,14 +32,19 @@ public class CommandDispatcher {
     static final String DLQ_STREAM = "dlq";
 
     private final TaskRepository taskRepository;
+    private final ExecutionRepository executionRepository;
     private final TaskDispatcher taskDispatcher;
+    private final EngineService engineService;
     private final StringRedisTemplate redis;
     private final ObjectMapper mapper;
 
-    public CommandDispatcher(TaskRepository taskRepository, TaskDispatcher taskDispatcher,
+    public CommandDispatcher(TaskRepository taskRepository, ExecutionRepository executionRepository,
+                             TaskDispatcher taskDispatcher, @Lazy EngineService engineService,
                              StringRedisTemplate redis, ObjectMapper mapper) {
         this.taskRepository = taskRepository;
+        this.executionRepository = executionRepository;
         this.taskDispatcher = taskDispatcher;
+        this.engineService = engineService;
         this.redis = redis;
         this.mapper = mapper;
     }
@@ -46,8 +55,40 @@ public class CommandDispatcher {
                 case EnqueueTask enqueue -> enqueueTask(executionId, enqueue);
                 case ScheduleTimer timer -> scheduleTimer(executionId, timer);
                 case SendToDlq dlq -> sendToDlq(executionId, dlq);
+                case SpawnChildren spawn -> spawnChildren(executionId, spawn);
                 case CompleteExecution ignored -> { /* terminal projection is written in the loop tx */ }
             }
+        }
+    }
+
+    /**
+     * Fans out a Parallel/Map state into child executions: one row per input (recording parent id,
+     * branch index, and the parent state so the child resolves its sub-graph), each started through
+     * the engine loop. A child already spawned for an index is skipped, so a re-dispatch is a no-op.
+     */
+    private void spawnChildren(String parentId, SpawnChildren spawn) {
+        Execution parent = executionRepository.findById(parentId).orElseThrow();
+        List<Object> inputs = spawn.inputs();
+        for (int index = 0; index < inputs.size(); index++) {
+            String childName = parentId + ":" + spawn.state() + ":" + index;
+            if (executionRepository.existsByParentExecutionIdAndBranchStateAndParentBranchIndex(
+                    parentId, spawn.state(), index)) {
+                continue; // already spawned — effectively-once
+            }
+            JsonNode childInput = toNode(inputs.get(index));
+            Execution child = Execution.builder()
+                    .workflowDefinitionId(parent.getWorkflowDefinitionId())
+                    .name(childName)
+                    .status(ExecutionStatus.RUNNING)
+                    .input(childInput)
+                    .parentExecutionId(parentId)
+                    .parentBranchIndex(index)
+                    .branchState(spawn.state())
+                    .rootExecutionId(parent.getRootExecutionId())
+                    .startedAt(Instant.now())
+                    .build();
+            executionRepository.save(child);
+            engineService.trigger(child.getId(), new ExecutionStarted(childInput));
         }
     }
 

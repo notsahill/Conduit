@@ -10,5 +10,6 @@
     <include file="db/changelog/changes/V3__create_execution_events.xml"/>
     <include file="db/changelog/changes/V4__create_tasks.xml"/>
     <include file="db/changelog/changes/V5__add_timer_kind.xml"/>
+    <include file="db/changelog/changes/V6__add_branch_state.xml"/>
 
 </databaseChangeLog>

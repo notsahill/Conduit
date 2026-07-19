@@ -49,6 +49,9 @@ public class EngineEventCodec {
             case RETRY_SCHEDULED -> new RetryScheduled(state, p.get("attempt").asInt(), p.get("seconds").asInt());
             case RETRY_DUE -> new RetryDue(state);
             case CHOICE_EVALUATED -> new ChoiceEvaluated(state, text(p, "next"));
+            case CHILDREN_SPAWNED -> new ChildrenSpawned(state, p.get("count").asInt());
+            case CHILD_SUCCEEDED -> new ChildSucceeded(state, p.get("index").asInt(), field(p, "output"));
+            case CHILD_FAILED -> new ChildFailed(state, p.get("index").asInt(), text(p, "error"), text(p, "cause"));
             case EXECUTION_SUCCEEDED -> new ExecutionSucceeded(field(p, "output"));
             case EXECUTION_FAILED -> new ExecutionFailed(text(p, "error"), text(p, "cause"));
             default -> throw new IllegalArgumentException("cannot decode event type " + row.getType());
@@ -69,6 +72,9 @@ public class EngineEventCodec {
             case RetryScheduled ignored -> EventType.RETRY_SCHEDULED;
             case RetryDue ignored -> EventType.RETRY_DUE;
             case ChoiceEvaluated ignored -> EventType.CHOICE_EVALUATED;
+            case ChildrenSpawned ignored -> EventType.CHILDREN_SPAWNED;
+            case ChildSucceeded ignored -> EventType.CHILD_SUCCEEDED;
+            case ChildFailed ignored -> EventType.CHILD_FAILED;
             case ExecutionSucceeded ignored -> EventType.EXECUTION_SUCCEEDED;
             case ExecutionFailed ignored -> EventType.EXECUTION_FAILED;
         };
@@ -87,6 +93,9 @@ public class EngineEventCodec {
             case RetryScheduled e -> e.state();
             case RetryDue e -> e.state();
             case ChoiceEvaluated e -> e.state();
+            case ChildrenSpawned e -> e.state();
+            case ChildSucceeded e -> e.state();
+            case ChildFailed e -> e.state();
             case ExecutionStarted ignored -> null;
             case ExecutionSucceeded ignored -> null;
             case ExecutionFailed ignored -> null;
@@ -122,6 +131,16 @@ public class EngineEventCodec {
             }
             case RetryDue ignored -> { /* state is a column; no payload */ }
             case ChoiceEvaluated e -> p.put("next", e.next());
+            case ChildrenSpawned e -> p.put("count", e.count());
+            case ChildSucceeded e -> {
+                p.put("index", e.index());
+                p.set("output", mapper.valueToTree(e.output()));
+            }
+            case ChildFailed e -> {
+                p.put("index", e.index());
+                p.put("error", e.error());
+                p.put("cause", e.cause());
+            }
             case ExecutionSucceeded e -> p.set("output", mapper.valueToTree(e.output()));
             case ExecutionFailed e -> {
                 p.put("error", e.error());

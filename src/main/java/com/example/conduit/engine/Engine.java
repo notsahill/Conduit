@@ -3,6 +3,8 @@ package com.example.conduit.engine;
 import com.example.conduit.dsl.Catcher;
 import com.example.conduit.dsl.ChoiceState;
 import com.example.conduit.dsl.FailState;
+import com.example.conduit.dsl.MapState;
+import com.example.conduit.dsl.ParallelState;
 import com.example.conduit.dsl.PassState;
 import com.example.conduit.dsl.Retrier;
 import com.example.conduit.dsl.State;
@@ -48,6 +50,8 @@ public final class Engine {
                     onFailure(graph, tt.state(), TIMEOUT_ERROR, "task timed out", state, events, commands);
             case WaitCompleted wc -> onWaitCompleted(graph, wc.state(), state, events, commands);
             case RetryDue rd -> redispatchTask(graph, rd.state(), state, events, commands);
+            case ChildSucceeded cs -> onChildSucceeded(graph, cs, state, events, commands);
+            case ChildFailed cf -> onChildFailed(graph, cf, state, events, commands);
             default -> throw new UnsupportedOperationException("trigger not handled yet: " + trigger);
         }
         return new DecideResult(events, commands);
@@ -87,10 +91,109 @@ public final class Engine {
                     enterState(graph, next, data, state, events, commands, depth + 1);
                 }
             }
+            case ParallelState parallel -> {
+                int branches = parallel.branches() == null ? 0 : parallel.branches().size();
+                List<Object> inputs = new ArrayList<>();
+                for (int i = 0; i < branches; i++) {
+                    inputs.add(data); // every branch gets the same input
+                }
+                fanOut(graph, name, parallel.next(), parallel.end(), inputs, state, events, commands, depth);
+            }
+            case MapState map -> {
+                JsonNode items = JsonPaths.resolve(data, map.itemsPath());
+                if (items == null || !items.isArray()) {
+                    failExecution(events, commands, "States.Runtime",
+                            "Map ItemsPath '" + map.itemsPath() + "' did not resolve an array");
+                } else {
+                    List<Object> inputs = new ArrayList<>();
+                    items.forEach(inputs::add); // each array item is one iteration's input
+                    fanOut(graph, name, map.next(), map.end(), inputs, state, events, commands, depth);
+                }
+            }
             case SucceedState ignored -> complete(events, commands, data);
             case FailState fail -> failExecution(events, commands, fail.error(), fail.cause());
-            default -> throw new UnsupportedOperationException("state not handled yet: " + s);
         }
+    }
+
+    /** Spawn one child per input and park; with no inputs, aggregate an empty result immediately. */
+    private static void fanOut(WorkflowGraph graph, String name, String next, boolean end,
+                               List<Object> inputs, ExecutionState state,
+                               List<EngineEvent> events, List<Command> commands, int depth) {
+        if (inputs.isEmpty()) {
+            aggregate(graph, name, next, end, List.of(), state, events, commands, depth);
+        } else {
+            events.add(new ChildrenSpawned(name, inputs.size()));
+            commands.add(new SpawnChildren(name, inputs));
+        }
+    }
+
+    /** All children of a Parallel/Map finished: emit the ordered aggregate and move on. */
+    private static void aggregate(WorkflowGraph graph, String name, String next, boolean end,
+                                  List<Object> outputs, ExecutionState state,
+                                  List<EngineEvent> events, List<Command> commands, int depth) {
+        events.add(new StateExited(name, outputs));
+        if (end) {
+            complete(events, commands, outputs);
+        } else {
+            enterState(graph, next, outputs, state, events, commands, depth + 1);
+        }
+    }
+
+    private static void onChildSucceeded(WorkflowGraph graph, ChildSucceeded cs, ExecutionState state,
+                                         List<EngineEvent> events, List<Command> commands) {
+        ChildProgress progress = state.childProgressOf(cs.state()); // includes this child (trigger replayed)
+        if (progress.allSucceeded()) {
+            State s = graph.states().get(cs.state());
+            aggregate(graph, cs.state(), nextOf(s), endOf(s), orderedOutputs(progress),
+                    state, events, commands, 0);
+        }
+        // otherwise still waiting on siblings — park with no further events
+    }
+
+    private static void onChildFailed(WorkflowGraph graph, ChildFailed cf, ExecutionState state,
+                                      List<EngineEvent> events, List<Command> commands) {
+        State s = graph.states().get(cf.state());
+        Catcher catcher = matchCatch(catchersOf(s), cf.error());
+        if (catcher != null) {
+            Object errorOutput = errorData(cf.error(), cf.cause());
+            events.add(new StateExited(cf.state(), errorOutput));
+            enterState(graph, catcher.next(), errorOutput, state, events, commands, 0);
+        } else {
+            failExecution(events, commands, cf.error(), cf.cause());
+        }
+    }
+
+    private static List<Object> orderedOutputs(ChildProgress progress) {
+        List<Object> ordered = new ArrayList<>(progress.total());
+        for (int i = 0; i < progress.total(); i++) {
+            ordered.add(progress.outputs().get(i));
+        }
+        return ordered;
+    }
+
+    private static String nextOf(State s) {
+        return switch (s) {
+            case ParallelState p -> p.next();
+            case MapState m -> m.next();
+            default -> null;
+        };
+    }
+
+    private static boolean endOf(State s) {
+        return switch (s) {
+            case ParallelState p -> p.end();
+            case MapState m -> m.end();
+            default -> false;
+        };
+    }
+
+    private static List<Catcher> catchersOf(State s) {
+        return switch (s) {
+            case TaskState t -> t.catchers();
+            case ParallelState p -> p.catchers();
+            case MapState m -> m.catchers();
+            default -> null;
+        };
     }
 
     /** Dispatch a task attempt: schedule it, enqueue it, and arm its timeout if configured. */

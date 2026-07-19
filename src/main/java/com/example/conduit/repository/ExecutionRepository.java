@@ -22,4 +22,8 @@ public interface ExecutionRepository extends JpaRepository<Execution, String>, J
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select e from Execution e where e.id = :id")
     Optional<Execution> findByIdForUpdate(@Param("id") String id);
+
+    /** Guards child spawning so a re-dispatched Parallel/Map fan-out never double-spawns an index. */
+    boolean existsByParentExecutionIdAndBranchStateAndParentBranchIndex(
+            String parentExecutionId, String branchState, Integer parentBranchIndex);
 }
