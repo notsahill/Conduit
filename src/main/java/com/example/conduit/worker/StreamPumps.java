@@ -40,6 +40,9 @@ public class StreamPumps implements SmartLifecycle {
         log.info("stream pumps started (consumer={})", consumerId);
     }
 
+    private static final long IDLE_BACKOFF_MS = 200;
+    private static final long ERROR_BACKOFF_MS = 2000;
+
     private void loop() {
         while (running) {
             try {
@@ -49,15 +52,27 @@ public class StreamPumps implements SmartLifecycle {
                 }
                 handled += resultConsumer.poll(consumerId);
                 if (handled == 0) {
-                    Thread.sleep(200); // idle backoff
+                    sleep(IDLE_BACKOFF_MS); // idle backoff
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
             } catch (Exception e) {
-                log.warn("stream pump cycle error: {}", e.toString());
+                // Back off on error (e.g. Redis unreachable) so a persistent failure doesn't tight-loop
+                // and flood the logs; the pump retries once the dependency recovers.
+                log.warn("stream pump cycle error, backing off {}ms: {}", ERROR_BACKOFF_MS, e.toString());
+                try {
+                    sleep(ERROR_BACKOFF_MS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
             }
         }
+    }
+
+    private static void sleep(long millis) throws InterruptedException {
+        Thread.sleep(millis);
     }
 
     @Override
