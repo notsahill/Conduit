@@ -20,7 +20,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Phase 3 done-when: start an execution over HTTP; it persists an {@code ExecutionStarted} event plus
  * a RUNNING projection row (one tx), and the ordered history is readable.
  */
-@SpringBootTest
+@SpringBootTest(properties = "conduit.streams.autostart=false")
 @AutoConfigureMockMvc
 @Import(TestcontainersConfiguration.class)
 class ExecutionControllerTest {
@@ -65,19 +65,23 @@ class ExecutionControllerTest {
                 .andExpect(jsonPath("$.id").value(execId))
                 .andExpect(jsonPath("$.workflowDefinitionId").value(defId))
                 .andExpect(jsonPath("$.status").value("RUNNING"))
+                .andExpect(jsonPath("$.currentState").value("Ocr"))
                 .andExpect(jsonPath("$.input.doc").value("a.pdf"));
     }
 
     @Test
-    void historyReturnsExecutionStartedEvent() throws Exception {
+    void historyRecordsStartThenFirstTaskScheduled() throws Exception {
         String defId = createDefinition();
         String execId = startExecution(defId, "{ \"doc\": \"b.pdf\" }");
 
+        // Start drives the engine into the first Task and parks: started, entered, scheduled.
         mvc.perform(get("/executions/{id}/history", execId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$", hasSize(3)))
                 .andExpect(jsonPath("$[0].seq").value(0))
-                .andExpect(jsonPath("$[0].type").value("EXECUTION_STARTED"));
+                .andExpect(jsonPath("$[0].type").value("EXECUTION_STARTED"))
+                .andExpect(jsonPath("$[1].type").value("STATE_ENTERED"))
+                .andExpect(jsonPath("$[2].type").value("TASK_SCHEDULED"));
     }
 
     @Test

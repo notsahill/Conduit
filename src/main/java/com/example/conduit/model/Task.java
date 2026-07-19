@@ -14,6 +14,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -64,10 +65,10 @@ public class Task extends AuditableEntity {
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "parameters", columnDefinition = "jsonb")
-    private Object parameters;
+    private JsonNode parameters;
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "input", columnDefinition = "jsonb")
-    private Object input;
+    private JsonNode input;
 
 }

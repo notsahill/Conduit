@@ -19,7 +19,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Phase 3 control-plane: create a definition (DSL-validated, versioned), describe it, list them.
  * Backed by a real Postgres via Testcontainers.
  */
-@SpringBootTest
+@SpringBootTest(properties = "conduit.streams.autostart=false")
 @AutoConfigureMockMvc
 @Import(TestcontainersConfiguration.class)
 class WorkflowDefinitionControllerTest {

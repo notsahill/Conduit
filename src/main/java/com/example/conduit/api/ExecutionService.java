@@ -2,7 +2,8 @@ package com.example.conduit.api;
 
 import com.example.conduit.api.dto.StartExecutionRequest;
 import com.example.conduit.api.dto.StartExecutionResponse;
-import com.example.conduit.enums.EventType;
+import com.example.conduit.engine.EngineService;
+import com.example.conduit.engine.ExecutionStarted;
 import com.example.conduit.enums.ExecutionStatus;
 import com.example.conduit.model.Execution;
 import com.example.conduit.model.ExecutionEvent;
@@ -11,38 +12,39 @@ import com.example.conduit.repository.ExecutionRepository;
 import com.example.conduit.repository.WorkflowDefinitionRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
 
-/** Starts and reads executions. Start persists the projection row and the first event in one tx. */
+/** Starts and reads executions. Start inserts the run row, then drives the engine's first trigger. */
 @Service
 public class ExecutionService {
 
     private final WorkflowDefinitionRepository definitionRepository;
     private final ExecutionRepository executionRepository;
     private final ExecutionEventRepository eventRepository;
+    private final EngineService engineService;
     private final ObjectMapper objectMapper;
 
     public ExecutionService(WorkflowDefinitionRepository definitionRepository,
                             ExecutionRepository executionRepository,
                             ExecutionEventRepository eventRepository,
+                            EngineService engineService,
                             ObjectMapper objectMapper) {
         this.definitionRepository = definitionRepository;
         this.executionRepository = executionRepository;
         this.eventRepository = eventRepository;
+        this.engineService = engineService;
         this.objectMapper = objectMapper;
     }
 
     /**
-     * Records a new run: a RUNNING projection row plus the {@code ExecutionStarted} event at seq 0,
-     * atomically. The engine advances the machine on the first trigger (Phase 4); here we only
-     * establish the run and its authoritative first event.
+     * Inserts the RUNNING projection row (committed on its own), then fires the {@code ExecutionStarted}
+     * trigger through the engine loop — which appends the events, enters the first state, and dispatches
+     * its task. The row is committed first so the loop's {@code SELECT ... FOR UPDATE} can lock it.
      */
-    @Transactional
     public StartExecutionResponse start(String definitionId, StartExecutionRequest request) {
         if (!definitionRepository.existsById(definitionId)) {
             throw new NotFoundException("workflow definition '" + definitionId + "' not found");
@@ -60,15 +62,7 @@ public class ExecutionService {
         execution.setRootExecutionId(execution.getId());
         executionRepository.save(execution);
 
-        ObjectNode payload = objectMapper.createObjectNode();
-        payload.set("input", input);
-        ExecutionEvent started = ExecutionEvent.builder()
-                .executionId(execution.getId())
-                .seq(0)
-                .type(EventType.EXECUTION_STARTED)
-                .payload(payload)
-                .build();
-        eventRepository.save(started);
+        engineService.trigger(execution.getId(), new ExecutionStarted(input));
 
         return new StartExecutionResponse(execution.getId());
     }

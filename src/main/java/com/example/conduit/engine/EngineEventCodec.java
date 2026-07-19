@@ -1,0 +1,113 @@
+package com.example.conduit.engine;
+
+import com.example.conduit.enums.EventType;
+import com.example.conduit.model.ExecutionEvent;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.springframework.stereotype.Component;
+
+/**
+ * Translates between the in-memory {@link EngineEvent} (what {@link Engine} and {@link Replay} speak)
+ * and the persisted {@link ExecutionEvent} row. The type discriminator lives in a column; the
+ * event-specific data lives in the JSONB payload. Round-trippable so the engine loop can rebuild
+ * {@link ExecutionState} from the durable log.
+ */
+@Component
+public class EngineEventCodec {
+
+    private final ObjectMapper mapper;
+
+    public EngineEventCodec(ObjectMapper mapper) {
+        this.mapper = mapper;
+    }
+
+    public ExecutionEvent toRow(String executionId, int seq, EngineEvent event) {
+        return ExecutionEvent.builder()
+                .executionId(executionId)
+                .seq(seq)
+                .type(type(event))
+                .stateName(stateName(event))
+                .payload(payload(event))
+                .build();
+    }
+
+    public EngineEvent fromRow(ExecutionEvent row) {
+        JsonNode p = row.getPayload();
+        String state = row.getStateName();
+        return switch (row.getType()) {
+            case EXECUTION_STARTED -> new ExecutionStarted(field(p, "input"));
+            case STATE_ENTERED -> new StateEntered(state);
+            case STATE_EXITED -> new StateExited(state, field(p, "output"));
+            case TASK_SCHEDULED -> new TaskScheduled(state, p.get("resource").asText(),
+                    p.get("attempt").asInt(), field(p, "input"));
+            case TASK_SUCCEEDED -> new TaskSucceeded(state, field(p, "output"));
+            case TASK_FAILED -> new TaskFailed(state, text(p, "error"), text(p, "cause"));
+            case EXECUTION_SUCCEEDED -> new ExecutionSucceeded(field(p, "output"));
+            case EXECUTION_FAILED -> new ExecutionFailed(text(p, "error"), text(p, "cause"));
+            default -> throw new IllegalArgumentException("cannot decode event type " + row.getType());
+        };
+    }
+
+    private EventType type(EngineEvent event) {
+        return switch (event) {
+            case ExecutionStarted ignored -> EventType.EXECUTION_STARTED;
+            case StateEntered ignored -> EventType.STATE_ENTERED;
+            case StateExited ignored -> EventType.STATE_EXITED;
+            case TaskScheduled ignored -> EventType.TASK_SCHEDULED;
+            case TaskSucceeded ignored -> EventType.TASK_SUCCEEDED;
+            case TaskFailed ignored -> EventType.TASK_FAILED;
+            case ExecutionSucceeded ignored -> EventType.EXECUTION_SUCCEEDED;
+            case ExecutionFailed ignored -> EventType.EXECUTION_FAILED;
+        };
+    }
+
+    private String stateName(EngineEvent event) {
+        return switch (event) {
+            case StateEntered e -> e.state();
+            case StateExited e -> e.state();
+            case TaskScheduled e -> e.state();
+            case TaskSucceeded e -> e.state();
+            case TaskFailed e -> e.state();
+            case ExecutionStarted ignored -> null;
+            case ExecutionSucceeded ignored -> null;
+            case ExecutionFailed ignored -> null;
+        };
+    }
+
+    private JsonNode payload(EngineEvent event) {
+        ObjectNode p = mapper.createObjectNode();
+        switch (event) {
+            case ExecutionStarted e -> p.set("input", mapper.valueToTree(e.input()));
+            case StateEntered ignored -> { /* state is a column; no payload */ }
+            case StateExited e -> p.set("output", mapper.valueToTree(e.output()));
+            case TaskScheduled e -> {
+                p.put("resource", e.resource());
+                p.put("attempt", e.attempt());
+                p.set("input", mapper.valueToTree(e.input()));
+            }
+            case TaskSucceeded e -> p.set("output", mapper.valueToTree(e.output()));
+            case TaskFailed e -> {
+                p.put("error", e.error());
+                p.put("cause", e.cause());
+            }
+            case ExecutionSucceeded e -> p.set("output", mapper.valueToTree(e.output()));
+            case ExecutionFailed e -> {
+                p.put("error", e.error());
+                p.put("cause", e.cause());
+            }
+        }
+        return p;
+    }
+
+    /** A payload field as a raw {@link JsonNode} (the engine records carry {@code Object} data). */
+    private JsonNode field(JsonNode payload, String name) {
+        return payload == null ? null : payload.get(name);
+    }
+
+    /** A payload field as a nullable String (missing or JSON null → {@code null}). */
+    private String text(JsonNode payload, String name) {
+        JsonNode node = field(payload, name);
+        return node == null || node.isNull() ? null : node.asText();
+    }
+}
